@@ -1,0 +1,89 @@
+Role and goal
+
+Act as an expert in pharmacoepidemiology and biostatistics. Reanalyze an observational cohort comparing eGFR trajectories over 48 months after starting dapagliflozin (5 mg, 10 mg) or empagliflozin (10 mg, 25 mg). The current analysis plots adjusted means at 6-month intervals in non-switchers only, adjusted for baseline eGFR, UACR category, age, and sex. It produced implausible results: opposite dose effects for the two drugs, and eGFR rising over time with empagliflozin 25 mg in CKD G3a–G5. Replace it with a target trial emulation that reduces selection bias, confounding by indication, informative dropout, and regression to the mean. Write reproducible Python code (pandas, statsmodels, lifelines, scikit-learn; R via rpy2 is acceptable for lme4, JMbayes2, WeightIt, cobalt). Comment every step, and log every exclusion.
+
+Data (replace placeholders with actual names)
+
+Patient table: [patient_id], [birth_date], [sex], [diabetes_type], [ckd_cause], [heart_failure_dx], comorbidities, [death_date], [krt_start_date] (dialysis or transplant), [last_followup_date]
+Prescriptions: [patient_id], [drug_name], [dose_mg], [dispense_date], [days_supply]
+Labs: [patient_id], [lab_date], [creatinine], [uacr], [hba1c], [potassium]; [setting] (inpatient/outpatient)
+Vitals: [systolic_bp], [weight], [bmi]
+Hospitalizations: [admit_date], [discharge_date], [aki_dx]
+Concurrent drugs: ACE inhibitor/ARB/ARNI, finerenone or steroidal MRA, GLP-1 RA, diuretics, insulin, sulfonylureas, NSAIDs
+Step 1. Target trial specification
+
+Before writing any code, produce a table listing eligibility, treatment strategies, assignment, time zero, follow-up, outcomes, causal contrasts (intention-to-treat and per-protocol), and the analysis plan. Time zero is the first SGLT2 inhibitor dispensing.
+
+Step 2. Cohort: active-comparator new-user design
+
+Adults aged 18 or older with no SGLT2 inhibitor dispensed in the 12 months before index (new users).
+At least 12 months of prior data, and at least 2 outpatient eGFR values in the 12 months before index, spanning 90 days or more if available.
+Exclude patients on dialysis, with a kidney transplant, or with baseline eGFR below 20 mL/min/1.73 m², plus type 1 diabetes, pregnancy, and anyone who started 2 SGLT2 inhibitors on the same day.
+Produce a STROBE/RECORD-style flow diagram with counts at each step.
+Step 3. eGFR measurement and baseline definition
+
+Recalculate every eGFR with the race-free CKD-EPI 2021 creatinine equation.
+Use outpatient values only. Exclude values drawn during a hospitalization, within 7 days after discharge, or during a KDIGO-defined AKI episode.
+Baseline eGFR: the mean of the last 2 or more stable outpatient values in the 3–12 months before index. Run a sensitivity analysis using the single most recent value.
+Pre-index eGFR slope: per-patient OLS slope over the 12–24 months before index, among patients with 3 or more values. Use it both as a covariate and for a falsification check.
+Baseline UACR: most recent value within 12 months. Classify into A1, A2, and A3, and treat missing as its own category plus multiple imputation.
+Step 4. Exposure definitions
+
+Primary (intention-to-treat): drug and dose at the first dispensing, regardless of later switching, dose changes, or stopping. Do not exclude switchers.
+Secondary (per-protocol): censor at a dose change, a switch to another SGLT2 inhibitor, or discontinuation (a gap of more than 60 days after days supply runs out; also report a 90-day sensitivity). Correct the resulting selection bias with stabilized inverse-probability-of-censoring weights, modeled from time-varying eGFR, UACR, hospitalization, AKI, potassium, and blood pressure.
+Prespecified main contrast: drug at its kidney-protective dose (dapagliflozin 10 mg vs empagliflozin 10 mg). Treat dose-level comparisons as secondary and exploratory, with the expectation of no dose-response.
+Step 5. Confounding control
+
+Baseline covariates: age, sex, diabetes status and HbA1c, heart failure, atherosclerotic cardiovascular disease, hypertension, systolic BP, BMI, CKD cause, baseline eGFR (spline), pre-index eGFR slope, UACR category and log UACR, potassium, ACE inhibitor/ARB/ARNI, MRA/finerenone, GLP-1 RA, diuretics, insulin, NSAIDs, hospitalizations in the prior year, nephrology care, calendar year of index (to capture changes in indications and guidelines), site or prescriber specialty, and socioeconomic indicators where available.
+Estimate propensity with a multinomial model (or generalized boosted model) across the 4 drug-dose groups, and separately for the pairwise main contrast.
+Use stabilized IPTW truncated at the 1st and 99th percentiles. Use overlap weights as a sensitivity analysis.
+Check balance: standardized mean differences before and after weighting (target below 0.1), shown in a love plot. Show propensity distributions to check overlap.
+Handle missing covariates with multiple imputation by chained equations (20 or more datasets), then pool with Rubin's rules.
+Step 6. Primary outcome: eGFR slope
+
+Fit a weighted linear mixed model on all post-index outpatient eGFR values, with random intercepts and random slopes per patient and an unstructured covariance.
+Model time as a piecewise linear spline with a knot at 3 months. Report:
+Acute change (0–3 months)
+Chronic slope (3 months to end of follow-up), in mL/min/1.73 m² per year
+Total slope (baseline to 48 months) and mean change at 48 months
+Include treatment-by-time-segment interactions, plus the adjusted covariates.
+Report estimates and between-group differences with 95% CIs, using robust sandwich or bootstrap SEs (1,000 or more patient-level resamples) that account for weighting.
+Informative dropout: fit a joint longitudinal-survival (shared-parameter) model linking the eGFR trajectory to the hazard of death, kidney replacement therapy, or loss to follow-up. Sensitivity analyses: pattern-mixture models and delta-adjusted multiple imputation under MNAR.
+Step 7. Secondary outcomes: hard kidney endpoints
+
+Composite: sustained eGFR decline of 40% or more from baseline (confirmed by a repeat value at least 28 days later), sustained eGFR below 15, kidney replacement therapy, or kidney death.
+Components separately, and a 57% decline (doubling of creatinine) for comparison.
+Use weighted cause-specific Cox models, with Fine-Gray subdistribution models for non-kidney death as a competing risk. Plot Aalen-Johansen cumulative incidence curves with 95% CIs. Test proportional hazards.
+Safety outcomes: AKI hospitalization, hyperkalemia, volume depletion, genital infection, DKA, lower limb amputation.
+Step 8. Falsification and bias checks
+
+Pre-index trajectories: plot and test whether pre-index eGFR slopes are parallel across groups after weighting.
+Negative control outcome with no plausible link to SGLT2 inhibition (for example, cataract surgery or herpes zoster). Report its weighted HR.
+E-value for the main contrast.
+Compare the dose groups' baseline characteristics before weighting, to show channeling (for example, higher-risk patients routed to dapagliflozin 10 mg, and empagliflozin 25 mg reduced to 10 mg as eGFR falls).
+Step 9. Subgroups (test for interaction)
+
+CKD stage at index (G1–G2, G3a, G3b, G4), UACR category (A1, A2, A3), diabetes vs no diabetes, heart failure vs none, age 65 or older vs younger, calendar era.
+
+Step 10. Plausibility benchmarks
+
+Compare estimates with randomized trial data and flag any group whose estimate falls outside the expected range, or shows a rising eGFR trajectory:
+
+DAPA-CKD (dapagliflozin 10 mg): acute change about −3.97 over 2 weeks; chronic slope −1.67/yr (placebo −3.59); total slope −2.86/yr over 30 months.
+DECLARE-TIMI 58 (dapagliflozin 10 mg, type 2 diabetes): chronic slope −1.54/yr; total slope −1.78/yr.
+EMPA-KIDNEY (empagliflozin 10 mg): acute dip about 2.12 at 2 months; chronic slope about −1.37/yr.
+EMPA-REG OUTCOME: chronic slope about −0.19/yr, identical for empagliflozin 10 mg and 25 mg (no dose-response).
+Step 11. Outputs
+
+Target trial specification table and cohort flow diagram.
+Table 1: baseline characteristics by group, unweighted and weighted, with SMDs; love plot; propensity overlap plot.
+Slope table: acute, chronic, and total slopes per group and between-group differences (95% CI), for ITT, per-protocol, and each sensitivity analysis.
+Figure: model-predicted mean eGFR (with 95% CI bands) from 0 to 48 months by group, not raw means. Put a legible numbers-at-risk table beneath the x-axis. Do not show a time point where fewer than 50 patients, or fewer than 10% of the baseline group, remain at risk.
+Pre-index trajectory plot.
+Cumulative incidence curves and HR table for hard outcomes and safety outcomes.
+Forest plot of subgroup results with interaction p-values.
+A short written interpretation that separates prespecified from exploratory findings, compares the results with the trial benchmarks, and states remaining limitations (residual confounding, adherence measured from dispensing, eGFR measured more often in sicker patients).
+Constraints
+
+Do not interpret dose-group differences as causal unless they survive weighting, per-protocol IPCW, and falsification checks.
+Report every analytic decision and every sensitivity analysis, including those with null results.
